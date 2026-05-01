@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "lux": {
+      "command": "python",
+      "args": ["lux_mcp.py"]
+    }
+  }
+}
