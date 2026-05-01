@@ -12,7 +12,90 @@ from luxy import api as luxy_api
 
 logging.basicConfig(level=logging.WARNING)
 
-mcp = FastMCP("lux")
+# ---------------------------------------------------------------------------
+# Server instructions
+# ---------------------------------------------------------------------------
+# Sent to the client at initialize and surfaced to the model. Covers tool
+# usage and the report-formatting conventions used by Dunn-lab Lux reports.
+
+INSTRUCTIONS = r"""
+This server exposes Yale's Lux federated catalogue (people, places, objects,
+works, concepts, events, collections) for cultural-heritage and natural-history
+research. Always cite the `view_url` returned by each query so the user can
+click through to the same query in the Lux UI.
+
+## Report-writing conventions
+
+When the user asks for a *report* or *exhibition plan* grounded in Lux holdings,
+follow these conventions so output matches the existing reports in `tmp/`
+(`iz_report/`, `botany_report/`, `yale_collections/`, `exhibitions/`,
+`drawn_from_life/`):
+
+1. **Draft in Markdown or plain text first.** Get the prose right before
+   wrapping it in LaTeX. Pandoc-flavoured Markdown with a YAML header (see
+   `tmp/iz_report/invertebrate_report.md`) is the easiest path; a hand-written
+   `.tex` is fine for exhibition-style documents (see
+   `tmp/exhibitions/exhibitions.tex`).
+
+2. **Render to PDF in the project's LaTeX style.** Match the existing reports:
+   - `documentclass[11pt]{article}`, `geometry margin=1in`, `mathpazo` font.
+   - `colorlinks=true` with `linkcolor=NavyBlue`, `urlcolor=NavyBlue`.
+   - Section numbering off (`\setcounter{secnumdepth}{-\maxdimen}`).
+   - `tabularx` for focal-objects tables; `booktabs` rules.
+   - Author block: `Prepared by Casey W. Dunn (EEB, dunnlab.org)`.
+   - One report per subdirectory of `tmp/` (`.tex` + `.pdf` co-located, plus
+     any figure source files).
+
+3. **Place each report in its own `tmp/<report_name>/` directory.** Keep the
+   `.tex` and the compiled `.pdf` together. Compile with `tectonic` if
+   available, otherwise `pdflatex` / `xelatex`.
+
+4. **Ground every claim in Lux.** Quote accession numbers, call numbers, and
+   finding-aid box/folder citations verbatim from the records returned by the
+   tools. Note that those records may shift as Lux is re-curated.
+
+5. **Close with a `Preparation` section** that includes the following
+   boilerplate, verbatim (LaTeX form):
+
+```
+\section{Preparation}\label{preparation}
+
+This document was prepared using \textbf{Claude Opus 4.7} (Anthropic) with
+\textbf{luxmcp} (\url{https://github.com/caseywdunn/luxmcp}), an MCP
+server that exposes Yale's Lux cultural-heritage and natural-history
+catalogue (\url{https://lux.collections.yale.edu/}) to language models.
+luxmcp wraps \textbf{luxy} (\url{https://github.com/project-lux/luxy}),
+the official Python client for the Lux API.
+```
+
+Append a sentence or two describing the specific filters used and the
+date the records were retrieved (records may shift as Lux is re-curated).
+
+The Markdown form of the same boilerplate is:
+
+```
+## Preparation
+
+This document was prepared using **Claude Opus 4.7** (Anthropic) with
+**luxmcp** (<https://github.com/caseywdunn/luxmcp>), an MCP server that
+exposes Yale's Lux cultural-heritage and natural-history catalogue
+(<https://lux.collections.yale.edu/>) to language models. luxmcp wraps
+**luxy** (<https://github.com/project-lux/luxy>), the official Python
+client for the Lux API.
+```
+
+6. **Update the model name in the boilerplate** if you are not Claude Opus 4.7.
+   Substitute the actual model identifier (e.g. ``Claude Sonnet 4.6'').
+
+7. **Cite a `Sources` section** before `Preparation`, listing at minimum the
+   Lux URL, any GBIF dataset keys, and links to companion reports in
+   sibling `tmp/` directories.
+
+See `AGENTS.md` in the lux-mcp repo for additional operational guidance on
+filter syntax, decision trees, and gotchas.
+""".strip()
+
+mcp = FastMCP("lux", instructions=INSTRUCTIONS)
 
 # ---------------------------------------------------------------------------
 # Entity type registry

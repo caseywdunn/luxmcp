@@ -61,3 +61,28 @@ The `filters` argument is a dict.
 ## Style
 
 Keep responses grounded in returned data. Quote labels and counts; link the `view_url`. Don't speculate about what's in the collection beyond what the tools returned — Lux only shows what's been digitized and ingested, which is a subset of any physical collection.
+
+## Writing reports
+
+When the user asks for a *report* or an *exhibition plan* grounded in Lux holdings, follow the conventions used by the existing reports in `tmp/` (`iz_report/`, `botany_report/`, `yale_collections/`, `exhibitions/`, `drawn_from_life/`). The same guidance is sent to the client at MCP `initialize` (see `INSTRUCTIONS` in `lux_mcp.py`).
+
+1. **Draft in Markdown or plain text first.** Pandoc-flavoured Markdown with a YAML header (see `tmp/iz_report/invertebrate_report.md`) is the easiest path; hand-written `.tex` is fine for exhibition-style documents (see `tmp/exhibitions/exhibitions.tex`).
+2. **Render to PDF in the project's LaTeX style.** `documentclass[11pt]{article}`, `geometry margin=1in`, `mathpazo` font, `colorlinks=true` with `linkcolor=NavyBlue` / `urlcolor=NavyBlue`, section numbering off, `tabularx` + `booktabs` for focal-objects tables. Author block: `Prepared by Casey W. Dunn (EEB, dunnlab.org)`.
+3. **One report per subdirectory of `tmp/`.** `.tex` and compiled `.pdf` co-located; compile with `tectonic` if available.
+4. **Ground every claim in Lux.** Quote accession numbers, call numbers, and finding-aid box/folder citations verbatim. Note that those records may shift as Lux is re-curated.
+5. **Close with a `Preparation` section** that includes the following boilerplate verbatim (LaTeX form):
+
+```
+\section{Preparation}\label{preparation}
+
+This document was prepared using \textbf{Claude Opus 4.7} (Anthropic) with
+\textbf{luxmcp} (\url{https://github.com/caseywdunn/luxmcp}), an MCP
+server that exposes Yale's Lux cultural-heritage and natural-history
+catalogue (\url{https://lux.collections.yale.edu/}) to language models.
+luxmcp wraps \textbf{luxy} (\url{https://github.com/project-lux/luxy}),
+the official Python client for the Lux API.
+```
+
+Append a sentence or two describing the specific Lux filters used and the date the records were retrieved. Substitute the actual model identifier if you are not Claude Opus 4.7.
+
+6. **Cite a `Sources` section** before `Preparation`, listing at minimum the Lux URL, any GBIF dataset keys, and links to companion reports in sibling `tmp/` directories.
