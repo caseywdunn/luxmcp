@@ -97,17 +97,27 @@ Casey W. Dunn, <https://dunnlab.org>).
 ## Retrieving files (DigitalObjects)
 
 `get_item_details` returns a `files` list — each entry has `url`, `label`, and
-usually `format` and/or `kind` (`Digital Image`, `Web Page`, `IIIF Manifest`).
-Do not route file bytes through MCP. Fetch them yourself:
+usually `format` and/or `kind` (`Digital Image`, `Web Page`, `IIIF Manifest`,
+`PDF`). Do not route file bytes through MCP. Fetch them yourself:
 
+- **PDFs of digitized texts** (`kind: PDF`, format `application/pdf`): for
+  any digitized item in Yale Library Digital Collections (Beinecke, Sterling,
+  etc.), `get_item_details` auto-resolves the IIIF v3 manifest's `rendering`
+  field and surfaces a direct PDF download URL at
+  `collections.library.yale.edu/pdfs/<id>.pdf`. One `curl` retrieves the
+  flattened PDF of the digitized leaves; pass to the harness for direct
+  reading. This is the entry point for primary-document research.
 - Static bytes: `curl -L -o tmp/<report>/figures/<name>.<ext> <url>`.
-- IIIF manifests (`format: application/ld+json`): fetch the JSON, walk to
-  `items[*].items[*].items[*].body.service[0].id`, then build
-  `${service_id}/full/max/0/default.jpg` for the full-resolution image.
+- IIIF manifests (`format: application/ld+json` or `application/json`):
+  fetch the JSON, walk to `items[*].items[*].items[*].body.id` (or
+  `body.service[0].id`) for full-resolution image URLs.
 - Web pages: cite the URL; don't scrape unless asked.
 
-Save figures into `tmp/<report_name>/figures/`, and cite both the file URL
-and the parent Lux URI in the `Sources` section.
+Save figures into `tmp/<report_name>/figures/` and PDFs into
+`tmp/<report_name>/sources/`, and cite both the file URL and the parent Lux
+URI in the `Sources` section. Note that most Yale Library items are
+*partially digitized* — the PDF only contains the leaves that have been
+imaged.
 
 See `AGENTS.md` in the lux-mcp repo for additional operational guidance on
 filter syntax, decision trees, and gotchas.
@@ -208,7 +218,51 @@ def _digital_objects(data: dict) -> list[tuple[str, dict]]:
     return pairs
 
 
-def _extract_files(data: dict, max_files: int = 8) -> list[dict]:
+# Cache resolved IIIF manifest → rendering-PDF lookups for the process lifetime.
+# Stores both successes (dict) and failures (None) so we don't re-fetch.
+_MANIFEST_PDF_CACHE: dict[str, dict | None] = {}
+
+
+def _resolve_manifest_pdf(manifest_url: str, timeout: float = 5.0) -> dict | None:
+    """Fetch a IIIF v3 manifest and return its top-level rendering PDF, if any.
+
+    Yale Library digitized texts (Beinecke, Sterling, etc.) advertise a
+    `rendering` field in their IIIF v3 manifests pointing at a flattened PDF
+    of the digitized leaves. Other Yale manifests (Peabody, YUAG) typically
+    do not. This helper returns the first `application/pdf` rendering it
+    finds, or None on any failure or if no PDF is advertised.
+    """
+    if manifest_url in _MANIFEST_PDF_CACHE:
+        return _MANIFEST_PDF_CACHE[manifest_url]
+    result: dict | None = None
+    try:
+        resp = luxy_api.session.get(manifest_url, timeout=timeout)
+        resp.raise_for_status()
+        manifest = resp.json()
+        for r in manifest.get("rendering", []) or []:
+            if r.get("format") == "application/pdf" and r.get("id"):
+                label = r.get("label", {})
+                # IIIF v3 labels are language-keyed dicts; pick first non-empty
+                lbl = ""
+                if isinstance(label, dict):
+                    for vals in label.values():
+                        if vals:
+                            lbl = vals[0]
+                            break
+                result = {
+                    "url": r["id"],
+                    "format": "application/pdf",
+                    "kind": "PDF",
+                    "label": lbl or "Download as PDF",
+                }
+                break
+    except Exception:
+        result = None
+    _MANIFEST_PDF_CACHE[manifest_url] = result
+    return result
+
+
+def _extract_files(data: dict, max_files: int = 8, resolve_pdfs: bool = False) -> list[dict]:
     files: list[dict] = []
     for outer_label, do in _digital_objects(data):
         access = do.get("access_point") or []
@@ -227,11 +281,31 @@ def _extract_files(data: dict, max_files: int = 8) -> list[dict]:
         files.append(entry)
         if len(files) >= max_files:
             break
+
+    # If asked, resolve any IIIF manifest in `files` to the rendering PDF
+    # advertised in its top-level `rendering` field. Costs one extra HTTP per
+    # distinct manifest URL (cached). Only active when resolve_pdfs=True so
+    # bulk callers (search, summarize) don't pay the cost.
+    if resolve_pdfs and not any(f.get("format") == "application/pdf" for f in files):
+        for entry in list(files):
+            fmt = (entry.get("format") or "").lower()
+            url = entry.get("url", "")
+            if "json" in fmt and ("/manifests/" in url or "/manifest" in url):
+                pdf = _resolve_manifest_pdf(url)
+                if pdf:
+                    files.append(pdf)
+                    break  # one rendering PDF is enough
     return files
 
 
-def trim_item(data: dict, full: bool = False) -> dict:
-    """Return a concise summary of a Linked Art item."""
+def trim_item(data: dict, full: bool = False, resolve_pdfs: bool = False) -> dict:
+    """Return a concise summary of a Linked Art item.
+
+    If `resolve_pdfs=True`, IIIF manifests in the record's files list will be
+    fetched and any top-level rendering PDF surfaced as a first-class file
+    entry. Costs one extra HTTP per distinct manifest URL (cached); off by
+    default so bulk callers (search, summarize_collection) don't pay.
+    """
     if full:
         return data
 
@@ -269,7 +343,7 @@ def trim_item(data: dict, full: bool = False) -> dict:
     # digitally_carried_by) and image bytes / thumbnails (representation →
     # digitally_shown_by). Each entry surfaces label, format, kind, and the
     # access_point URL the model can curl.
-    files = _extract_files(data)
+    files = _extract_files(data, resolve_pdfs=resolve_pdfs)
     if files:
         out["files"] = files
 
@@ -402,7 +476,7 @@ def get_item_details(item_uri: str, full: bool = False) -> str:
         response = session.get(item_uri)
         response.raise_for_status()
         data = response.json()
-        return json.dumps(trim_item(data, full=full), indent=2)
+        return json.dumps(trim_item(data, full=full, resolve_pdfs=True), indent=2)
     except requests.HTTPError as e:
         return json.dumps({"error": f"HTTP {e.response.status_code}: {item_uri}"})
     except Exception as e:
