@@ -48,6 +48,18 @@ The `filters` argument is a dict.
 - **People are PeopleGroups.** The same entity type covers individuals (Rembrandt) and organizations (J.P. Morgan & Co.). Don't expect a separate "organizations" type.
 - **Library vs museum.** A search for "siphonophore" returns library publications *about* siphonophores by default. To get specimens, also filter `memberOf` by the relevant museum collection (e.g. "Invertebrate Zoology Collection, Yale Peabody Museum").
 
+## Retrieving files (DigitalObjects)
+
+`get_item_details` returns a `files` array listing every fetchable resource attached to a record. Each entry has a `url` (the `access_point` URL on `media.collections.yale.edu`, `manifests.collections.yale.edu`, or the owning museum's site), a `label`, and usually a `format` (MIME) and/or `kind` (e.g. `Digital Image`, `Web Page`, `IIIF Manifest`).
+
+Do **not** route file bytes through MCP — fetch them yourself with `curl`:
+
+- **Static bytes** (thumbnails, PDFs, downloadable images): `curl -L -o tmp/<report>/figures/<name>.<ext> <url>`. Pick the extension from the `format` field.
+- **IIIF manifests** (`format: application/ld+json`): the URL returns JSON describing image services, not an image. Fetch the manifest, walk to `items[*].items[*].items[*].body.service[0].id`, then build a full-res URL with `${service_id}/full/max/0/default.jpg`. Use this whenever you need higher resolution than the `Primary Image Thumbnail`.
+- **Web pages** (`kind: Web Page`): cite the URL in the report; don't scrape unless the user asks.
+
+Save figures into `tmp/<report_name>/figures/` alongside the `.tex`, and cite both the file's source URL and the parent Lux URI in the report's `Sources` section. Records may shift as Lux is re-curated, so refetch before final compile if a report sits for a while.
+
 ## When the user asks open-ended questions
 
 | Question shape | Suggested approach |
@@ -67,7 +79,7 @@ Keep responses grounded in returned data. Quote labels and counts; link the `vie
 When the user asks for a *report* or an *exhibition plan* grounded in Lux holdings, follow the conventions used by the existing reports in `tmp/` (`iz_report/`, `botany_report/`, `yale_collections/`, `exhibitions/`, `drawn_from_life/`). The same guidance is sent to the client at MCP `initialize` (see `INSTRUCTIONS` in `lux_mcp.py`).
 
 1. **Draft in Markdown or plain text first.** Pandoc-flavoured Markdown with a YAML header (see `tmp/iz_report/invertebrate_report.md`) is the easiest path; hand-written `.tex` is fine for exhibition-style documents (see `tmp/exhibitions/exhibitions.tex`).
-2. **Render to PDF in the project's LaTeX style.** `documentclass[11pt]{article}`, `geometry margin=1in`, `mathpazo` font, `colorlinks=true` with `linkcolor=NavyBlue` / `urlcolor=NavyBlue`, section numbering off, `tabularx` + `booktabs` for focal-objects tables. Author block: `Prepared by Casey W. Dunn (EEB, dunnlab.org)`.
+2. **Render to PDF in the project's LaTeX style.** `documentclass[11pt]{article}`, `geometry margin=1in`, `mathpazo` font, `colorlinks=true` with `linkcolor=NavyBlue` / `urlcolor=NavyBlue`, section numbering off, `tabularx` + `booktabs` for focal-objects tables. **No author byline** — omit `\author{...}` (or set it to `\author{}`) so the title block carries only the title and date. The Casey W. Dunn credit moves to the `Preparation` section.
 3. **One report per subdirectory of `tmp/`.** `.tex` and compiled `.pdf` co-located; compile with `tectonic` if available.
 4. **Ground every claim in Lux.** Quote accession numbers, call numbers, and finding-aid box/folder citations verbatim. Note that those records may shift as Lux is re-curated.
 5. **Close with a `Preparation` section** that includes the following boilerplate verbatim (LaTeX form):
@@ -75,14 +87,11 @@ When the user asks for a *report* or an *exhibition plan* grounded in Lux holdin
 ```
 \section{Preparation}\label{preparation}
 
-This document was prepared using \textbf{Claude Opus 4.7} (Anthropic) with
-\textbf{luxmcp} (\url{https://github.com/caseywdunn/luxmcp}), an MCP
-server that exposes Yale's Lux cultural-heritage and natural-history
-catalogue (\url{https://lux.collections.yale.edu/}) to language models.
-luxmcp wraps \textbf{luxy} (\url{https://github.com/project-lux/luxy}),
-the official Python client for the Lux API.
+This document was prepared using \textbf{<MODEL_NAME>} with
+\textbf{luxmcp} (\url{https://github.com/caseywdunn/luxmcp}, written by
+Casey W. Dunn, \url{https://dunnlab.org}).
 ```
 
-Append a sentence or two describing the specific Lux filters used and the date the records were retrieved. Substitute the actual model identifier if you are not Claude Opus 4.7.
+**Substitute your own model identifier for `<MODEL_NAME>`** — read your current model name, version, and vendor from your own system prompt and write a single self-identifying string into the placeholder (e.g. ``Claude Opus 4.7 (Anthropic)'', ``GPT-5 (OpenAI)'', ``Gemini 2.5 Pro (Google)''). Do not hardcode any specific model or vendor from this template; the goal is to record the model that actually generated the report, regardless of vendor. The MCP server cannot see which model is connected, so the substitution must come from you. Append a sentence or two describing the specific Lux filters used and the date the records were retrieved.
 
 6. **Cite a `Sources` section** before `Preparation`, listing at minimum the Lux URL, any GBIF dataset keys, and links to companion reports in sibling `tmp/` directories.

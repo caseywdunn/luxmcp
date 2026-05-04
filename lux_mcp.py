@@ -42,7 +42,9 @@ follow these conventions so output matches the existing reports in `tmp/`
    - `colorlinks=true` with `linkcolor=NavyBlue`, `urlcolor=NavyBlue`.
    - Section numbering off (`\setcounter{secnumdepth}{-\maxdimen}`).
    - `tabularx` for focal-objects tables; `booktabs` rules.
-   - Author block: `Prepared by Casey W. Dunn (EEB, dunnlab.org)`.
+   - **No author byline.** Omit the `\author{...}` line (or set it to
+     `\author{}`); the title block carries only the title and date. The
+     Casey W. Dunn credit moves to the `Preparation` section, below.
    - One report per subdirectory of `tmp/` (`.tex` + `.pdf` co-located, plus
      any figure source files).
 
@@ -60,12 +62,9 @@ follow these conventions so output matches the existing reports in `tmp/`
 ```
 \section{Preparation}\label{preparation}
 
-This document was prepared using \textbf{Claude Opus 4.7} (Anthropic) with
-\textbf{luxmcp} (\url{https://github.com/caseywdunn/luxmcp}), an MCP
-server that exposes Yale's Lux cultural-heritage and natural-history
-catalogue (\url{https://lux.collections.yale.edu/}) to language models.
-luxmcp wraps \textbf{luxy} (\url{https://github.com/project-lux/luxy}),
-the official Python client for the Lux API.
+This document was prepared using \textbf{<MODEL_NAME>} with
+\textbf{luxmcp} (\url{https://github.com/caseywdunn/luxmcp}, written by
+Casey W. Dunn, \url{https://dunnlab.org}).
 ```
 
 Append a sentence or two describing the specific filters used and the
@@ -76,20 +75,39 @@ The Markdown form of the same boilerplate is:
 ```
 ## Preparation
 
-This document was prepared using **Claude Opus 4.7** (Anthropic) with
-**luxmcp** (<https://github.com/caseywdunn/luxmcp>), an MCP server that
-exposes Yale's Lux cultural-heritage and natural-history catalogue
-(<https://lux.collections.yale.edu/>) to language models. luxmcp wraps
-**luxy** (<https://github.com/project-lux/luxy>), the official Python
-client for the Lux API.
+This document was prepared using **<MODEL_NAME>** with
+**luxmcp** (<https://github.com/caseywdunn/luxmcp>, written by
+Casey W. Dunn, <https://dunnlab.org>).
 ```
 
-6. **Update the model name in the boilerplate** if you are not Claude Opus 4.7.
-   Substitute the actual model identifier (e.g. ``Claude Sonnet 4.6'').
+6. **Substitute your own model identifier for `<MODEL_NAME>` at write-time.**
+   Read your current model name, version, and vendor from your own system
+   prompt and write a single self-identifying string into the placeholder
+   — e.g. ``Claude Opus 4.7 (Anthropic)'', ``Claude Sonnet 4.6 (Anthropic)'',
+   ``GPT-5 (OpenAI)'', ``Gemini 2.5 Pro (Google)''. Do not hardcode any
+   specific model or vendor from this template; the goal is for the report
+   to record the model that actually generated it, regardless of vendor.
+   The MCP server cannot detect which model is connected to it, so this
+   substitution must come from you.
 
 7. **Cite a `Sources` section** before `Preparation`, listing at minimum the
    Lux URL, any GBIF dataset keys, and links to companion reports in
    sibling `tmp/` directories.
+
+## Retrieving files (DigitalObjects)
+
+`get_item_details` returns a `files` list — each entry has `url`, `label`, and
+usually `format` and/or `kind` (`Digital Image`, `Web Page`, `IIIF Manifest`).
+Do not route file bytes through MCP. Fetch them yourself:
+
+- Static bytes: `curl -L -o tmp/<report>/figures/<name>.<ext> <url>`.
+- IIIF manifests (`format: application/ld+json`): fetch the JSON, walk to
+  `items[*].items[*].items[*].body.service[0].id`, then build
+  `${service_id}/full/max/0/default.jpg` for the full-resolution image.
+- Web pages: cite the URL; don't scrape unless asked.
+
+Save figures into `tmp/<report_name>/figures/`, and cite both the file URL
+and the parent Lux URI in the `Sources` section.
 
 See `AGENTS.md` in the lux-mcp repo for additional operational guidance on
 filter syntax, decision trees, and gotchas.
@@ -172,6 +190,46 @@ def _extract_production(produced_by: dict | None) -> dict:
     return result
 
 
+def _digital_objects(data: dict) -> list[tuple[str, dict]]:
+    """Yield (source_label, digital_object) pairs from a Linked Art record.
+
+    `subject_of[].digitally_carried_by[]` → web pages, IIIF manifests, PDFs.
+    `representation[].digitally_shown_by[]` → image bytes, thumbnails.
+    """
+    pairs: list[tuple[str, dict]] = []
+    for entry in data.get("subject_of", []) or []:
+        outer_label = entry.get("_label", "")
+        for do in entry.get("digitally_carried_by", []) or []:
+            pairs.append((outer_label, do))
+    for entry in data.get("representation", []) or []:
+        outer_label = entry.get("_label", "")
+        for do in entry.get("digitally_shown_by", []) or []:
+            pairs.append((outer_label, do))
+    return pairs
+
+
+def _extract_files(data: dict, max_files: int = 8) -> list[dict]:
+    files: list[dict] = []
+    for outer_label, do in _digital_objects(data):
+        access = do.get("access_point") or []
+        url = access[0].get("id", "") if access else ""
+        if not url:
+            continue
+        kinds = [_label(c) for c in do.get("classified_as", []) or []]
+        entry = {
+            "url": url,
+            "label": do.get("_label") or outer_label,
+        }
+        if do.get("format"):
+            entry["format"] = do["format"]
+        if kinds:
+            entry["kind"] = kinds[0] if len(kinds) == 1 else kinds
+        files.append(entry)
+        if len(files) >= max_files:
+            break
+    return files
+
+
 def trim_item(data: dict, full: bool = False) -> dict:
     """Return a concise summary of a Linked Art item."""
     if full:
@@ -207,11 +265,13 @@ def trim_item(data: dict, full: bool = False) -> dict:
     if classified_as:
         out["classified_as"] = [_label(c) for c in classified_as[:5]]
 
-    # Subject (web pages, IIIF manifests)
-    subject_of = data.get("subject_of", [])
-    web = [s.get("access_point", [{}])[0].get("id", "") for s in subject_of if s.get("access_point")]
-    if web:
-        out["web_pages"] = [u for u in web if u][:3]
+    # Downloadable files: web pages, IIIF manifests (subject_of →
+    # digitally_carried_by) and image bytes / thumbnails (representation →
+    # digitally_shown_by). Each entry surfaces label, format, kind, and the
+    # access_point URL the model can curl.
+    files = _extract_files(data)
+    if files:
+        out["files"] = files
 
     # Birth/death for people
     for field in ("born", "died"):
