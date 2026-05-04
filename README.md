@@ -18,10 +18,12 @@ Lux indexes roughly 41 million records across the Yale Peabody Museum, the Yale 
 | --- | --- |
 | `list_filters(entity_type)` | Discover every filter the API accepts for a given entity type, with descriptions and accepted value types. Always call this before guessing filter names. |
 | `search(entity_type, filters, page, full_items)` | Generic filtered search. Returns total count, a Lux UI view URL, and up to 20 trimmed records per page. |
-| `get_item_details(item_uri, full)` | Fetch one record by URI. `full=True` returns the raw Linked Art JSON. |
+| `get_item_details(item_uri, full)` | Fetch one record by URI. `full=True` returns the raw Linked Art JSON. Auto-resolves Yale Library IIIF v3 manifests to their `rendering` PDF and surfaces it in the `files` list. |
 | `summarize_collection(entity_type, filters, max_pages)` | Aggregate stats over up to N pages: totals, top types, top makers, top places, sample labels, date range. |
 | `search_by_place(place_name, target_entity_type, relationship, ...)` | Resolve a place name to a Lux URI, then find entities linked to it (objects produced/encountered there, people born/died there, etc.). |
 | `explore_by_person(person_name, entity_type, relationship, page)` | Resolve a person and find related objects, works, events, or collections (created by, collected by, member of). |
+| `fetch_finding_aid(uri, include_inventory)` | Fetch and parse a Yale Manuscripts & Archives finding aid (ArchivesSpace public). Accepts a Lux archive set URI, an `hdl.handle.net/10079/fa/...` handle, or an `archives.yale.edu/...` URL. Returns structured JSON: title, dates, abstract, biographical/historical, scope, arrangement, extent, subjects, persistent URL, subpage links. |
+| `fetch_document(uri_or_url, save_to)` | Download the best digital surrogate (PDF or image) of a Lux item or any Yale Library URL to a local file the harness can `Read`. Resolves Yale Library IIIF manifests to their `rendering` PDF; otherwise downloads the URL as-is. |
 
 Entity types: `objects`, `works`, `people`, `places`, `concepts`, `events`, `collections`.
 

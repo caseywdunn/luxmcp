@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """MCP server for Yale's Lux cultural heritage collection API via the luxy library."""
 
+import html as _html
 import json
 import logging
+import os
+import re
 from typing import Any
+from urllib.parse import urlparse
 
 import requests
 from mcp.server.fastmcp import FastMCP
@@ -98,16 +102,28 @@ Casey W. Dunn, <https://dunnlab.org>).
 
 `get_item_details` returns a `files` list — each entry has `url`, `label`, and
 usually `format` and/or `kind` (`Digital Image`, `Web Page`, `IIIF Manifest`,
-`PDF`). Do not route file bytes through MCP. Fetch them yourself:
+`PDF`).
 
-- **PDFs of digitized texts** (`kind: PDF`, format `application/pdf`): for
-  any digitized item in Yale Library Digital Collections (Beinecke, Sterling,
-  etc.), `get_item_details` auto-resolves the IIIF v3 manifest's `rendering`
-  field and surfaces a direct PDF download URL at
-  `collections.library.yale.edu/pdfs/<id>.pdf`. One `curl` retrieves the
-  flattened PDF of the digitized leaves; pass to the harness for direct
-  reading. This is the entry point for primary-document research.
-- Static bytes: `curl -L -o tmp/<report>/figures/<name>.<ext> <url>`.
+For most needs the dedicated retrieval tools are simpler than rolling your
+own `curl`:
+
+- **`fetch_document(uri_or_url, save_to)`** downloads the best available
+  digital surrogate to a local path you can `Read`. Accepts a Lux item URI
+  (auto-resolves Yale Library IIIF v3 manifests to their `rendering` PDF),
+  a IIIF manifest URL, or a direct PDF/image URL. Save into
+  `tmp/<report>/sources/<name>.pdf` (PDFs) or `tmp/<report>/figures/`
+  (images). One call replaces the curl-and-Read dance.
+- **`fetch_finding_aid(uri, include_inventory=False)`** parses Yale's
+  ArchivesSpace public finding-aid pages (which 403 most generic crawlers).
+  Accepts a Lux archive set URI, an `hdl.handle.net/10079/fa/<id>` handle,
+  or an `archives.yale.edu/...` URL. Returns structured JSON with the
+  Abstract, Scope and Contents, Biographical/Historical, Dates, Extent,
+  Arrangement, Subjects, Persistent URL, and per-section subpage links —
+  the level of detail that the parent Lux record almost never includes.
+  Use this for any MS-/RU-prefixed call number you encounter in a Lux set.
+
+If you do need to fetch by hand:
+
 - IIIF manifests (`format: application/ld+json` or `application/json`):
   fetch the JSON, walk to `items[*].items[*].items[*].body.id` (or
   `body.service[0].id`) for full-resolution image URLs.
@@ -753,6 +769,315 @@ def explore_by_person(
     out["page"] = page
     out["items"] = trimmed
     return json.dumps(out, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Document & finding-aid retrieval
+# ---------------------------------------------------------------------------
+# These tools close the loop from "Lux says X exists" to "the agent can read
+# X." Lux is a metadata aggregator; the bytes of digitised texts and the full
+# contents of finding aids live elsewhere on Yale infrastructure. The two
+# tools below front-end that infrastructure with a single, agent-friendly
+# surface so reports can reach the source material in one call.
+
+# Yale's ArchivesSpace public site (archives.yale.edu) returns 403 to many
+# default HTTP clients but passes with any identifying real-world UA. We
+# advertise an honest one that points back at the project.
+_RESEARCH_UA = "lux-mcp/0.1 (research; +https://github.com/caseywdunn/luxmcp)"
+_FINDING_AID_HOST = "archives.yale.edu"
+_HANDLE_HOST = "hdl.handle.net"
+
+
+def _http_get(
+    url: str,
+    *,
+    timeout: float = 20.0,
+    allow_redirects: bool = True,
+    accept: str | None = None,
+    stream: bool = False,
+) -> requests.Response:
+    """HTTP GET with the project's research user-agent and sensible defaults."""
+    headers = {"User-Agent": _RESEARCH_UA}
+    if accept:
+        headers["Accept"] = accept
+    resp = requests.get(
+        url,
+        headers=headers,
+        timeout=timeout,
+        allow_redirects=allow_redirects,
+        stream=stream,
+    )
+    resp.raise_for_status()
+    return resp
+
+
+def _resolve_archives_url(uri: str) -> str:
+    """Normalise an input to a canonical archives.yale.edu resource URL.
+
+    Accepts:
+    - `https://lux.collections.yale.edu/data/set/...` — fetches the Lux
+      record and pulls the first archives.yale.edu access_point out of
+      `subject_of[].digitally_carried_by[]`.
+    - `https://hdl.handle.net/10079/fa/<id>` — follows the redirect.
+    - `https://archives.yale.edu/...` — returned unchanged.
+    """
+    parsed = urlparse(uri)
+    host = parsed.netloc
+
+    if host == _FINDING_AID_HOST:
+        return uri
+    if host == _HANDLE_HOST:
+        # Follow the handle redirect to its archives.yale.edu target.
+        resp = _http_get(uri)
+        return resp.url
+    if host == "lux.collections.yale.edu":
+        data = luxy_api.session.get(uri, timeout=15.0).json()
+        for _, do in _digital_objects(data):
+            for ap in do.get("access_point") or []:
+                ap_url = ap.get("id", "")
+                if _FINDING_AID_HOST in ap_url:
+                    return ap_url
+        raise ValueError(
+            f"No archives.yale.edu access_point found in Lux record {uri}"
+        )
+    raise ValueError(
+        f"Unsupported URI host '{host}'. Expected lux.collections.yale.edu, "
+        f"hdl.handle.net, or archives.yale.edu."
+    )
+
+
+# Section headers exposed by the ArchivesSpace public theme. Order roughly
+# matches display order so the JSON reads top-to-bottom like the page.
+_FINDING_AID_SECTIONS: list[tuple[str, str]] = [
+    ("scope_and_contents", "Scope and Contents"),
+    ("dates", "Dates"),
+    ("creator", "Creator"),
+    ("conditions_governing_access", "Conditions Governing Access"),
+    ("conditions_governing_use", "Conditions Governing Use"),
+    ("immediate_source_of_acquisition", "Immediate Source of Acquisition"),
+    ("arrangement", "Arrangement"),
+    ("extent", "Extent"),
+    ("language_of_materials", "Language of Materials"),
+    ("persistent_url", "Persistent URL"),
+    ("abstract", "Abstract"),
+    ("biographical_historical", "Biographical / Historical"),
+]
+
+
+def _strip_html(s: str) -> str:
+    """Strip tags, decode entities, collapse whitespace."""
+    s = re.sub(r"<[^>]+>", " ", s)
+    s = _html.unescape(s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _extract_section(html_text: str, header: str) -> str:
+    """Find a `<h_>HEADER</h_>` and return the text up to the next heading."""
+    m = re.search(
+        rf"<h\d[^>]*>\s*{re.escape(header)}\s*</h\d>",
+        html_text,
+        flags=re.S | re.I,
+    )
+    if not m:
+        return ""
+    start = m.end()
+    next_hdr = re.search(r"<h[1-4][^>]", html_text[start:], flags=re.I)
+    end = start + next_hdr.start() if next_hdr else min(len(html_text), start + 20000)
+    return _strip_html(html_text[start:end])
+
+
+def _parse_finding_aid_html(html_text: str, source_url: str) -> dict:
+    """Extract structured fields from an ArchivesSpace public resource page."""
+    out: dict[str, Any] = {"url": source_url, "kind": "finding_aid"}
+
+    h1s = re.findall(r"<h1[^>]*>(.+?)</h1>", html_text, flags=re.S)
+    titles = [_strip_html(h) for h in h1s]
+    titles = [t for t in titles if t and "Request Details" not in t]
+    if titles:
+        out["title"] = titles[0]
+
+    subpages: dict[str, str] = {}
+    for href in re.findall(
+        r'href="(/repositories/\d+/resources/\d+/[a-z_]+)"', html_text
+    ):
+        slug = href.rsplit("/", 1)[-1]
+        if slug not in subpages:
+            subpages[slug] = "https://archives.yale.edu" + href
+    if subpages:
+        out["subpages"] = subpages
+
+    for key, header in _FINDING_AID_SECTIONS:
+        text = _extract_section(html_text, header)
+        if text:
+            out[key] = text[:6000]
+
+    # Subjects: ArchivesSpace renders them as `<ul class="…subjects_list…">`,
+    # not below a heading, so match the class directly.
+    subj_match = re.search(
+        r'<ul[^>]*class="[^"]*subjects_list[^"]*"[^>]*>(.*?)</ul>',
+        html_text,
+        flags=re.S,
+    )
+    if subj_match:
+        items = re.findall(r"<a[^>]*>(.+?)</a>", subj_match.group(1), flags=re.S)
+        items = [_strip_html(i) for i in items if i.strip()]
+        items = [i for i in items if i and len(i) < 300]
+        if items:
+            out["subjects"] = items[:60]
+
+    return out
+
+
+@mcp.tool()
+def fetch_finding_aid(uri: str, include_inventory: bool = False) -> str:
+    """Retrieve and parse a Yale Manuscripts & Archives finding aid.
+
+    Lux records for archival sets (MS, RU collections) link to ArchivesSpace
+    finding aids at archives.yale.edu but do not catalogue their contents at
+    item level. This tool fetches the public finding-aid page and parses
+    standard sections (Abstract, Scope and Contents, Biographical/Historical,
+    Dates, Extent, Arrangement, Subjects, Persistent URL, etc.) into JSON.
+
+    Args:
+        uri: A Lux archive set URI, an `https://hdl.handle.net/10079/fa/...`
+             handle, or an `https://archives.yale.edu/repositories/.../...`
+             URL.
+        include_inventory: If True, also fetch the `/inventory` subpage and
+             try to extract any container labels or series titles visible in
+             the static HTML. The full container tree is JS-rendered, so this
+             is best-effort.
+    """
+    try:
+        archives_url = _resolve_archives_url(uri)
+        resp = _http_get(archives_url)
+        out = _parse_finding_aid_html(resp.text, archives_url)
+
+        if include_inventory and out.get("subpages", {}).get("inventory"):
+            inv_url = out["subpages"]["inventory"]
+            try:
+                inv_resp = _http_get(inv_url)
+                containers = re.findall(
+                    r"\b(Box\s+\d+|Folder\s+\d+)\b",
+                    _strip_html(inv_resp.text),
+                )
+                # Deduplicate while preserving order
+                seen: set[str] = set()
+                containers_unique = [
+                    c for c in containers if not (c in seen or seen.add(c))
+                ]
+                titles = [
+                    _strip_html(t)
+                    for t in re.findall(
+                        r'class="record-title[^"]*"[^>]*>([^<]+)<',
+                        inv_resp.text,
+                    )
+                ]
+                if containers_unique or titles:
+                    out["inventory"] = {
+                        "url": inv_url,
+                        "containers_visible": containers_unique[:200],
+                        "series_titles": titles[:60],
+                        "note": (
+                            "ArchivesSpace renders the full tree via JS; "
+                            "this is what the static HTML exposes."
+                        ),
+                    }
+            except Exception as exc:
+                out["inventory_error"] = str(exc)
+
+        return json.dumps(out, indent=2)
+    except requests.HTTPError as e:
+        return json.dumps({"error": f"HTTP {e.response.status_code}: {uri}"})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def _document_url_from_lux(item_uri: str) -> dict:
+    """Return the best digital-document file entry for a Lux item, or {}."""
+    data = luxy_api.session.get(item_uri, timeout=15.0).json()
+    files = _extract_files(data, max_files=20, resolve_pdfs=True)
+    for f in files:
+        if "pdf" in (f.get("format") or "").lower():
+            return f
+    for f in files:
+        if (f.get("format") or "").lower().startswith("image/"):
+            return f
+    return files[0] if files else {}
+
+
+@mcp.tool()
+def fetch_document(uri_or_url: str, save_to: str) -> str:
+    """Download a Lux item's digital surrogate to a local file.
+
+    Resolves the input to the best available file:
+    - **Lux item URI**: uses the same digital-object extraction as
+      `get_item_details`, including Yale Library IIIF v3 manifest →
+      `rendering` PDF resolution, and prefers PDF, then image, then the
+      first available file.
+    - **IIIF manifest URL** (`/manifest`, `.json`): probed for a
+      `rendering` PDF; falls back to downloading the manifest JSON itself.
+    - **Direct PDF / image URL**: downloaded as-is.
+
+    The bytes are streamed to `save_to` (parent directories are created).
+    Returns JSON with `local_path`, `url`, `bytes`, `content_type`, and
+    any label/format/kind metadata picked up along the way, so the caller
+    can `Read` the file directly.
+
+    Args:
+        uri_or_url: Lux URI, IIIF manifest URL, or direct file URL.
+        save_to: Path to write the file to (absolute or relative to CWD).
+    """
+    try:
+        parsed = urlparse(uri_or_url)
+        host = parsed.netloc
+        meta: dict[str, Any] = {"source": uri_or_url}
+
+        if host == "lux.collections.yale.edu":
+            f = _document_url_from_lux(uri_or_url)
+            if not f:
+                return json.dumps(
+                    {"error": f"No downloadable file in Lux record {uri_or_url}"}
+                )
+            url = f["url"]
+            for k in ("label", "format", "kind"):
+                if k in f:
+                    meta[k] = f[k]
+        elif "/manifest" in uri_or_url or uri_or_url.endswith(".json"):
+            pdf = _resolve_manifest_pdf(uri_or_url)
+            if pdf:
+                url = pdf["url"]
+                for k in ("label", "format", "kind"):
+                    if k in pdf:
+                        meta[k] = pdf[k]
+            else:
+                url = uri_or_url
+        else:
+            url = uri_or_url
+
+        resp = _http_get(url, timeout=120.0, stream=True)
+        parent = os.path.dirname(os.path.abspath(save_to))
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        size = 0
+        with open(save_to, "wb") as fh:
+            for chunk in resp.iter_content(chunk_size=65536):
+                if chunk:
+                    fh.write(chunk)
+                    size += len(chunk)
+
+        meta.update(
+            {
+                "url": url,
+                "local_path": os.path.abspath(save_to),
+                "bytes": size,
+                "content_type": resp.headers.get("content-type", ""),
+            }
+        )
+        return json.dumps(meta, indent=2)
+    except requests.HTTPError as e:
+        return json.dumps({"error": f"HTTP {e.response.status_code}: {uri_or_url}"})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
 
 
 if __name__ == "__main__":

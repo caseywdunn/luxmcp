@@ -52,16 +52,20 @@ The `filters` argument is a dict.
 
 `get_item_details` returns a `files` array listing every fetchable resource attached to a record. Each entry has a `url`, a `label`, and usually a `format` (MIME) and/or `kind` (e.g. `Digital Image`, `Web Page`, `IIIF Manifest`, `PDF`).
 
-Do **not** route file bytes through MCP — fetch them yourself with `curl`:
+Two dedicated retrieval tools front-end the messy infrastructure that lives behind those URLs:
 
-- **Digitized-text PDFs** (`kind: PDF`, format `application/pdf`): Yale Library's IIIF v3 manifests carry a top-level `rendering` field with a flattened PDF of the digitized leaves at `collections.library.yale.edu/pdfs/<id>.pdf`. `get_item_details` auto-resolves this for any record that has a Yale Library manifest in its files list, so the PDF appears as a first-class file entry alongside web-page and image URLs. **This is the entry point for primary-document research** — one `curl` retrieves the PDF, which the harness can read directly. Save into `tmp/<report>/sources/<name>.pdf`. Note: most Beinecke/Sterling items are *partially digitized*; the PDF contains only the imaged leaves.
-- **Static bytes** (thumbnails, downloadable images): `curl -L -o tmp/<report>/figures/<name>.<ext> <url>`. Pick the extension from the `format` field.
+- **`fetch_document(uri_or_url, save_to)`** downloads the best digital surrogate to a local path the harness can `Read`. Accepts a Lux item URI (auto-resolves Yale Library IIIF v3 manifests to their `rendering` PDF, prefers PDF over image), a IIIF manifest URL, or a direct PDF/image URL. Streams to `save_to`, returns `{local_path, url, bytes, content_type, format, kind, label}`. **This is the entry point for primary-document research** — one tool call replaces the curl-and-`Read` dance. Save PDFs into `tmp/<report>/sources/<name>.pdf` and images into `tmp/<report>/figures/`. Note that most Beinecke/Sterling items are *partially digitized*; the PDF contains only the imaged leaves.
+
+- **`fetch_finding_aid(uri, include_inventory=False)`** parses Yale's ArchivesSpace public finding-aid pages, which 403 most generic crawlers (including the harness's own WebFetch). Accepts a Lux archive set URI, an `hdl.handle.net/10079/fa/<id>` handle, or an `archives.yale.edu/.../resources/<id>` URL. Returns structured JSON: title, scope and contents, biographical/historical, dates, extent, arrangement, language, persistent URL, subjects, conditions of access/use, immediate source of acquisition, and subpage links. Use this for any MS- or RU-prefixed call number you encounter — the parent Lux record almost never carries the abstract or scope notes.
+
+If you do need to fetch by hand:
+
 - **IIIF manifests** (`format: application/ld+json` or `application/json`): the URL returns JSON describing image services. Fetch the manifest, walk to `items[*].items[*].items[*].body.id` for the canonical image URL, or `body.service[0].id` to build sized variants like `${service_id}/full/!1200,1200/0/default.jpg`.
 - **Web pages** (`kind: Web Page`): cite the URL in the report; don't scrape unless the user asks.
 
 Save figures into `tmp/<report_name>/figures/` and PDFs into `tmp/<report_name>/sources/`, alongside the `.tex`, and cite both the file's source URL and the parent Lux URI in the report's `Sources` section. Records may shift as Lux is re-curated, so refetch before final compile if a report sits for a while.
 
-The PDF resolution is gated to single-item lookups (`get_item_details`) because it costs one extra HTTP round-trip per distinct manifest URL. `search`, `summarize_collection`, and `explore_by_person` do not auto-resolve PDFs — they're for finding records, not reading them. To get the PDF for a record, fetch its details first.
+The PDF auto-resolution inside `get_item_details` is gated to single-item lookups because it costs one extra HTTP round-trip per distinct manifest URL. `search`, `summarize_collection`, and `explore_by_person` do not auto-resolve PDFs — they're for finding records, not reading them. To get the PDF for a record, either fetch its details first or call `fetch_document` directly with the Lux URI.
 
 ## When the user asks open-ended questions
 

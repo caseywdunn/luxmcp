@@ -10,8 +10,13 @@ import sys
 import traceback
 
 # Import the tool functions directly (not through MCP transport)
+import os
+import tempfile
+
 from lux_mcp import (
     explore_by_person,
+    fetch_document,
+    fetch_finding_aid,
     get_item_details,
     list_filters,
     search,
@@ -248,6 +253,65 @@ if data:
     assert data["total_results"] == 0
     assert data["items"] == []
     print(f"  empty result returned cleanly")
+
+# ------------------------------------------------------------------
+# 15. fetch_finding_aid — Farnam family papers (MS 203)
+# ------------------------------------------------------------------
+data = check(
+    "fetch_finding_aid(MS 203 via handle)",
+    fetch_finding_aid,
+    "https://hdl.handle.net/10079/fa/mssa.ms.0203",
+)
+if data:
+    assert data.get("title") == "Farnam family papers", \
+        f"Expected 'Farnam family papers', got {data.get('title')!r}"
+    assert "150 Linear Feet" in data.get("extent", ""), "Expected extent"
+    assert data.get("persistent_url", "").startswith("https://hdl.handle.net/"), \
+        "Expected persistent URL"
+    assert data.get("biographical_historical"), "Expected biographical note"
+    assert data.get("subjects"), "Expected at least one subject"
+    print(f"  parsed {len(data)} fields, "
+          f"{len(data.get('subjects', []))} subjects, "
+          f"subpages={list(data.get('subpages', {}))}")
+
+# ------------------------------------------------------------------
+# 16. fetch_finding_aid — accepts archives.yale.edu URL directly
+# ------------------------------------------------------------------
+data = check(
+    "fetch_finding_aid(direct archives.yale.edu URL)",
+    fetch_finding_aid,
+    "https://archives.yale.edu/repositories/12/resources/4111",
+)
+if data:
+    assert data.get("title") == "Farnam family papers"
+    assert "Farnam" in data.get("biographical_historical", "")
+
+# ------------------------------------------------------------------
+# 17. fetch_document — Yale Library digitised PDF round-trip
+# ------------------------------------------------------------------
+# The Magna Carta visual record has a IIIF rendering PDF that fits in a
+# few hundred KB; if Lux re-curates it, swap in another digitised work.
+DIGITISED_LUX_URI = (
+    "https://lux.collections.yale.edu/data/visual/"
+    "c76f5b56-c66d-4f8c-85f9-ecaf1fd8bde6"
+)
+with tempfile.TemporaryDirectory() as tmp:
+    save_to = os.path.join(tmp, "doc.pdf")
+    data = check(
+        "fetch_document(Lux URI → rendering PDF)",
+        fetch_document,
+        DIGITISED_LUX_URI,
+        save_to,
+    )
+    if data and "error" not in data:
+        assert data.get("content_type", "").startswith("application/pdf"), \
+            f"Expected PDF content-type, got {data.get('content_type')!r}"
+        assert data.get("bytes", 0) > 1024, "PDF suspiciously small"
+        assert os.path.exists(save_to), "PDF not written"
+        with open(save_to, "rb") as f:
+            head = f.read(8)
+        assert head.startswith(b"%PDF-"), f"Not a PDF: {head!r}"
+        print(f"  downloaded {data['bytes']} bytes from {data['url']}")
 
 # ------------------------------------------------------------------
 # Summary
