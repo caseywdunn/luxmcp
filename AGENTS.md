@@ -2,6 +2,11 @@
 
 Operational guide for AI agents using the `lux-mcp` tools to query Yale's Lux collection.
 
+For setup and client wiring, see [README.md](README.md). For deploying the
+server as a remote streamable-HTTP endpoint on Google Cloud Run (so the same
+tools are reachable from any MCP client without a local Python install), see
+[DEPLOY.md](DEPLOY.md).
+
 ## What Lux is
 
 Lux indexes ~41M records spanning Yale's museums, libraries, and archives. Every record is Linked Art JSON identified by a URI under `https://lux.collections.yale.edu/data/...`. Records cross-reference each other: an *Object* points to a *Place* of production and a *Person* who made it; a *Collection* (set) groups objects.

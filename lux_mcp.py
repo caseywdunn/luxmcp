@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """MCP server for Yale's Lux cultural heritage collection API via the luxy library."""
 
+import argparse
 import html as _html
 import json
 import logging
@@ -1080,5 +1081,37 @@ def fetch_document(uri_or_url: str, save_to: str) -> str:
         return json.dumps({"error": str(e)})
 
 
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Lux MCP server")
+    parser.add_argument(
+        "--http",
+        action="store_true",
+        help="serve over streamable HTTP instead of stdio (also enabled by MCP_TRANSPORT=http)",
+    )
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("HOST", "0.0.0.0"),
+        help="bind host for HTTP transport (default: 0.0.0.0, env: HOST)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("PORT", "8000")),
+        help="bind port for HTTP transport (default: 8000, env: PORT)",
+    )
+    args = parser.parse_args()
+
+    use_http = args.http or os.environ.get("MCP_TRANSPORT", "").lower() in (
+        "http",
+        "streamable-http",
+    )
+    if use_http:
+        mcp.settings.host = args.host
+        mcp.settings.port = args.port
+        mcp.run(transport="streamable-http")
+    else:
+        mcp.run()
+
+
 if __name__ == "__main__":
-    mcp.run()
+    main()

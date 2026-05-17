@@ -8,9 +8,11 @@ Lux indexes roughly 41 million records across the Yale Peabody Museum, the Yale 
 
 | File | Purpose |
 | --- | --- |
-| `lux_mcp.py` | The MCP server. Run it directly to expose the tools over stdio. |
+| `lux_mcp.py` | The MCP server. Stdio by default; pass `--http` for streamable HTTP. |
 | `test_lux_mcp.py` | Live integration tests that hit the real Lux API. |
 | `AGENTS.md` | Operational guide for AI agents calling this server. |
+| `DEPLOY.md` | Step-by-step Google Cloud Run deployment guide for the HTTP transport. |
+| `Dockerfile` | Container image used by the Cloud Run deploy. |
 
 ## Tools
 
@@ -83,6 +85,15 @@ It's optional but useful:
 ### Sanity-checking the server without a client
 
 `python lux_mcp.py` will start the server and block waiting for stdio messages — that's expected. To verify the underlying tools work without setting up a client, run the test suite (`python test_lux_mcp.py`); it imports the tool functions directly and exercises them against the live Lux API.
+
+## Deploying as a remote server
+
+`lux_mcp.py` also speaks streamable HTTP — pass `--http` (or set
+`MCP_TRANSPORT=http`) and it serves on `$PORT` (default 8000) instead of
+stdio. See **[DEPLOY.md](DEPLOY.md)** for an end-to-end Google Cloud Run
+walkthrough: one-time project setup, the `gcloud run deploy` command,
+client wiring (Claude Code and Claude Desktop), authentication trade-offs,
+logs, cost expectations, and teardown.
 
 ## Tests
 
