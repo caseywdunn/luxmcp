@@ -49,6 +49,16 @@ gcloud services enable \
   run.googleapis.com \
   cloudbuild.googleapis.com \
   artifactregistry.googleapis.com
+
+# Grant the default Compute Engine service account the Cloud Build Builder
+# role. On newer GCP projects Cloud Build runs as this account (not the
+# legacy cloudbuild.gserviceaccount.com), and without this role the first
+# deploy fails with "storage.objects.get access … denied" while trying to
+# fetch the uploaded source tarball.
+PROJECT_NUMBER=$(gcloud projects describe "$(gcloud config get-value project)" --format='value(projectNumber)')
+gcloud projects add-iam-policy-binding "$(gcloud config get-value project)" \
+  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --role="roles/cloudbuild.builds.builder"
 ```
 
 ## Deploy
@@ -197,6 +207,9 @@ Common failure modes:
   `--min-instances=1` (no longer free — billed for a warm container 24/7).
 - **`/mcp` returns 404** — the streamable-HTTP transport is mounted at
   `/mcp` by FastMCP. If you set a custom mount path, update the client URL.
+- **`storage.objects.get access … denied` during build** — the default
+  Compute Engine service account is missing the Cloud Build Builder role.
+  See the last step of [One-time project setup](#one-time-project-setup).
 
 ## Cost expectations
 

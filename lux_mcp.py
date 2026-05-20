@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 
 import requests
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from luxy import Collections, Concepts, Events, Objects, PeopleGroups, Places, Works
 from luxy import api as luxy_api
 
@@ -1081,6 +1082,26 @@ def fetch_document(uri_or_url: str, save_to: str) -> str:
         return json.dumps({"error": str(e)})
 
 
+def _probe_lux_connectivity() -> None:
+    """Log reachability of Lux endpoints from this container. Diagnostic only."""
+    ua = "Mozilla/5.0 (compatible; luxy/0.0.7; +https://github.com/project-lux/luxy)"
+    headers = {"User-Agent": ua, "Accept": "application/json"}
+    probes = [
+        ("config", "https://lux.collections.yale.edu/api/advanced-search-config"),
+        (
+            "search",
+            'https://lux.collections.yale.edu/api/search/item?q={"text":"siphonophore"}&page=1&pageLength=5',
+        ),
+        ("data-root", "https://lux.collections.yale.edu/data/"),
+    ]
+    for name, url in probes:
+        try:
+            r = requests.get(url, headers=headers, timeout=10)
+            logging.warning("LUX_PROBE %s: %s %s", name, r.status_code, r.reason)
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("LUX_PROBE %s: error %s", name, exc)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Lux MCP server")
     parser.add_argument(
@@ -1108,6 +1129,13 @@ def main() -> None:
     if use_http:
         mcp.settings.host = args.host
         mcp.settings.port = args.port
+        # FastMCP's default DNS-rebinding protection only whitelists
+        # localhost, which 421s every request behind Cloud Run / any reverse
+        # proxy. Disable it for HTTP mode — the deploy is HTTPS-terminated.
+        mcp.settings.transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=False
+        )
+        _probe_lux_connectivity()
         mcp.run(transport="streamable-http")
     else:
         mcp.run()
